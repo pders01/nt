@@ -215,3 +215,126 @@ sub _get_path {
 }
 
 main();
+
+=head1 NAME
+
+nt - A script to manage a collection of notes with commands to initialize, list, add, edit, and delete notes.
+
+=head1 SYNOPSIS
+
+nt [options] <command> [name]
+
+ Options:
+   -b, --base_directory  Set the base directory for storing notes (default: $HOME/.nt)
+
+ Commands:
+   usage                Display the usage information
+   init                 Initialize the notes directory
+   list                 List all notes
+   add [name]           Add a new note with the specified name
+   edit [name]          Edit an existing note with the specified name
+   delete [name]        Delete an existing note with the specified name
+
+=head1 DESCRIPTION
+
+This script provides a command-line interface for managing a collection of notes stored in a directory. It supports basic operations such as initializing a storage directory, listing notes, adding new notes, editing existing notes, and deleting notes.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-b, --base_directory>
+
+Specify the base directory where notes are stored. If not provided, the default is C<$HOME/.nt>.
+
+=back
+
+=head1 COMMANDS
+
+=over 4
+
+=item B<usage>
+
+Displays the usage information and exits.
+
+=item B<init>
+
+Initializes the base directory for storing notes if it doesn't already exist.
+
+=item B<list>
+
+Lists all notes in the base directory. If the "gum" command is enabled in the configuration, it will prompt the user to view or edit a selected note.
+
+=item B<add [name]>
+
+Adds a new note with the specified name. The note will be created as an empty file in the base directory.
+
+=item B<edit [name]>
+
+Edits an existing note with the specified name. The script will open the note in the editor specified by the C<$EDITOR> environment variable or default to "vi".
+
+=item B<delete [name]>
+
+Deletes the note with the specified name from the base directory.
+
+=back
+
+=head1 CONFIGURATION
+
+The script uses a configuration hashref to store settings such as the base directory, and whether to use external tools like "glow" and "gum".
+
+=over 4
+
+=item B<$CONFIG-E<gt>{'base_directory'}>
+
+The directory where all notes are stored. Defaults to C<$HOME/.nt>.
+
+=item B<$CONFIG-E<gt>{'glow'}>
+
+A flag indicating whether to use the "glow" tool for rendering markdown files.
+
+=item B<$CONFIG-E<gt>{'gum'}>
+
+A flag indicating whether to use the "gum" tool for interactive prompts.
+
+=back
+
+=head1 EXAMPLES
+
+=over 4
+
+=item Initialize the notes directory:
+
+    nt init
+
+=item List all notes:
+
+    nt list
+
+=item Add a new note called "meeting_notes":
+
+    nt add meeting_notes
+
+=item Edit an existing note called "meeting_notes":
+
+    nt edit meeting_notes
+
+=item Delete a note called "meeting_notes":
+
+    nt delete meeting_notes
+
+=back
+
+=head1 AUTHOR
+
+Paul Derscheid, <me@paulderscheid.xyz>
+
+=head1 VERSION
+
+This documentation refers to version 0.01 of nt.
+
+=head1 COPYRIGHT AND LICENSE
+
+This script is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+=cut
