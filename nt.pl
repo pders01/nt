@@ -185,7 +185,7 @@ sub _edit {
     }
 
     my $path = _get_path( [$name] );
-    if ($path) {
+    if ( !$path ) {
         return;
     }
 
