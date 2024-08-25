@@ -7,18 +7,20 @@ use Carp         qw( carp croak );
 use English      qw( -no_match_vars);
 use Getopt::Long qw( GetOptions );
 use IPC::Open3   qw( open3 );
+use List::Util   qw( reduce );
 use Path::Tiny   qw( path );
 use Pod::Usage   qw( pod2usage );
 use Readonly     qw( Readonly );
 
 use Symbol 'gensym';
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 Readonly my $COMMANDS => {
     usage  => 1,
     init   => 1,
     list   => 1,
+    view   => 1,
     add    => 1,
     edit   => 1,
     delete => 1,
@@ -121,6 +123,31 @@ sub _prompt {
     }
 
     return $choice;
+}
+
+sub _view {
+    my $name = shift;
+    if ( !$name ) {
+        return;
+    }
+
+    if ( !-d $CONFIG->{'base_directory'} ) {
+        return;
+    }
+
+    my $path = _get_path( [$name] );
+    if ( !$path ) {
+        return;
+    }
+
+    #my $file = ( reduce { $a->{ $b->basename } = $b; $a } {}, $path->children(qr/^[^.]/smx) )->{$name};
+    #if ( !$file ) {
+    #    return;
+    #}
+
+    _view_file($path);
+
+    return;
 }
 
 sub _view_file {
@@ -233,6 +260,7 @@ nt [options] <command> [name]
    usage                Display the usage information
    init                 Initialize the notes directory
    list                 List all notes
+   view                 View an existing note with the specified name
    add [name]           Add a new note with the specified name
    edit [name]          Edit an existing note with the specified name
    delete [name]        Delete an existing note with the specified name
@@ -266,6 +294,10 @@ Initializes the base directory for storing notes if it doesn't already exist.
 =item B<list>
 
 Lists all notes in the base directory. If the "gum" command is enabled in the configuration, it will prompt the user to view or edit a selected note.
+
+=item B<view [name]>
+
+Opens the note in the base directory with the specified name.
 
 =item B<add [name]>
 
@@ -333,7 +365,7 @@ Paul Derscheid, <me@paulderscheid.xyz>
 
 =head1 VERSION
 
-This documentation refers to version 0.01 of nt.
+This documentation refers to version 0.02 of nt.
 
 =head1 COPYRIGHT AND LICENSE
 
