@@ -83,27 +83,16 @@ sub _list {
 
     my $files = [ $path->children(qr/^[^.]/smx) ];
     if ( $CONFIG->{'gum'} ) {
-        my $prompt_file = join q{ }, 'gum', 'choose', $files->@*;
-        my $choice_file = qx/$prompt_file/;
-
-        my $prompt_action = 'gum choose view edit';
-        my $choice_action = qx/$prompt_action/;
-
-        if ( $choice_action =~ 'view' ) {
-            system 'glow', '-p', $choice_file;
+        my $file   = _prompt($files);
+        my $action = _prompt( [ 'view', 'edit' ] );
+        if ( $action eq 'view' ) {
+            _view_file($file);
 
             return;
         }
 
-        if ( $choice_action =~ 'edit' ) {
-            my $editor = $ENV{'EDITOR'} || 'vi';
-
-            system $editor, $choice_file;
-
-            my $exit_status = $CHILD_ERROR >> 8;
-            if ( $exit_status != 0 ) {
-                croak "Editor exited with non-zero status: $exit_status";
-            }
+        if ( $action eq 'edit' ) {
+            _edit_file($file);
 
             return;
         }
@@ -113,6 +102,32 @@ sub _list {
 
     for my $file ( $files->@* ) {
         print "$file\n" or croak $OS_ERROR;
+    }
+
+    return;
+}
+
+sub _prompt {
+    my $choices = shift;
+
+    my ( $prompt, $choice );
+    if ( $CONFIG->{'gum'} ) {
+        $prompt = join q{ }, 'gum', 'choose', $choices->@*;
+        $choice = qx/$prompt/;
+
+        return $choice;
+    }
+
+    return $choice;
+}
+
+sub _view_file {
+    my $file = shift;
+
+    if ( $CONFIG->{'glow'} ) {
+        system 'glow', '-p', $file;
+
+        return;
     }
 
     return;
@@ -145,9 +160,17 @@ sub _edit {
         return;
     }
 
+    _edit_file($path);
+
+    return;
+}
+
+sub _edit_file {
+    my $file = shift;
+
     my $editor = $ENV{'EDITOR'} || 'vi';
 
-    system $editor, $path;
+    system $editor, $file;
 
     my $exit_status = $CHILD_ERROR >> 8;
     if ( $exit_status != 0 ) {
