@@ -14,7 +14,7 @@ use Readonly     qw( Readonly );
 
 use Symbol 'gensym';
 
-our $VERSION = 0.02;
+our $VERSION = 0.11;
 
 Readonly my $COMMANDS => {
     usage  => 1,
@@ -365,7 +365,7 @@ Paul Derscheid, <me@paulderscheid.xyz>
 
 =head1 VERSION
 
-This documentation refers to version 0.02 of nt.
+This documentation refers to version 0.11 of nt.
 
 =head1 COPYRIGHT AND LICENSE
 
