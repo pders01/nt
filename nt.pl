@@ -262,7 +262,7 @@ nt [options] <command> [name]
    usage                Display the usage information
    init                 Initialize the notes directory
    list                 List all notes
-   view                 View an existing note with the specified name
+   view [name]          View an existing note with the specified name
    add [name]           Add a new note with the specified name
    edit [name]          Edit an existing note with the specified name
    delete [name]        Delete an existing note with the specified name
