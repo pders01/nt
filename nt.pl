@@ -38,24 +38,26 @@ sub main {
         croak('Error in command line arguments');
     }
 
-    $options->{'command'} = _validate( 'command', ( shift @ARGV ) // 'usage' );
+    $options->{'command'} = _validate( 'command', ( shift @ARGV ) // 'default' );
     $options->{'name'}    = shift @ARGV;
 
-    {   usage   => sub { _usage() },
+    {   usage   => sub { _usage(2) },
         init    => sub { _init() },
         list    => sub { _list() },
         view    => sub { _view( $options->{'name'} ) },
         add     => sub { _add( $options->{'name'} ) },
         edit    => sub { _edit( $options->{'name'} ) },
         delete  => sub { _delete( $options->{'name'} ) },
-        default => sub { _usage() },
+        default => sub { _usage(0) },
     }->{ $options->{'command'} }->();
 
     return;
 }
 
 sub _usage {
-    pod2usage();
+    my $verbose_level = shift;
+
+    pod2usage( { -verbose => $verbose_level } );
 
     return;
 }
