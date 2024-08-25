@@ -39,12 +39,14 @@ sub main {
     $options->{'command'} = _validate( 'command', ( shift @ARGV ) // 'usage' );
     $options->{'name'}    = shift @ARGV;
 
-    {   usage  => sub { _usage() },
-        init   => sub { _init() },
-        list   => sub { _list() },
-        add    => sub { _add( $options->{'name'} ) },
-        edit   => sub { _edit( $options->{'name'} ) },
-        delete => sub { _delete( $options->{'name'} ) },
+    {   usage   => sub { _usage() },
+        init    => sub { _init() },
+        list    => sub { _list() },
+        view    => sub { _view( $options->{'name'} ) },
+        add     => sub { _add( $options->{'name'} ) },
+        edit    => sub { _edit( $options->{'name'} ) },
+        delete  => sub { _delete( $options->{'name'} ) },
+        default => sub { _usage() },
     }->{ $options->{'command'} }->();
 
     return;
@@ -201,7 +203,7 @@ sub _delete {
 sub _validate {
     my ( $type, $param ) = @_;
 
-    return { command => sub { $COMMANDS->{$param} } }->{$type}->() ? $param : 0;
+    return { command => sub { $COMMANDS->{$param} } }->{$type}->() ? $param : 'default';
 }
 
 sub _get_path {
