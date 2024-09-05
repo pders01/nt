@@ -89,7 +89,11 @@ sub _list {
 
     my $files = [ $path->children(qr/^[^.]/smx) ];
     if ( $CONFIG->{'gum'} ) {
-        my $file   = _prompt($files);
+        my $file = _prompt($files);
+        if ( !$file ) {
+            return;
+        }
+
         my $action = _prompt( [ 'view', 'edit' ] );
         if ( $action eq 'view' ) {
             _view_file($file);
