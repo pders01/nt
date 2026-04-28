@@ -68,7 +68,7 @@ the default — `nt` never injects metadata you didn't ask for.
 | `nt edit <key>` | Open existing record in `$EDITOR` |
 | `nt delete <key>` | Remove a record |
 | `nt find <pattern>` | Print keys whose body or meta matches |
-| `nt usage` | Print full help |
+| `nt usage` | Print a short overview (add `-v` for full help) |
 
 ## Options
 

@@ -152,6 +152,7 @@ sub main {
         'meta'               => \$opts->{'meta_only'},
         'body'               => \$opts->{'body_only'},
         'set|m=s@'           => \$opts->{'set'},
+        'verbose|v'          => \$opts->{'verbose'},
     ) or exit $EXIT_USAGE;
 
     my $cmd = shift @ARGV // 'usage';
@@ -163,12 +164,41 @@ sub main {
 }
 
 sub _cmd_usage {
-    pod2usage(
-        {   '-verbose'  => 99,
-            '-sections' => 'SYNOPSIS|DESCRIPTION|COMMANDS|OPTIONS|EXAMPLES|EXIT STATUS',
-            '-exitval'  => 'NOEXIT',
-        }
-    );
+    my ( undef, undef, $opts ) = @_;
+    if ( $opts->{'verbose'} ) {
+        pod2usage(
+            {   '-verbose'  => 99,
+                '-sections' => 'SYNOPSIS|DESCRIPTION|COMMANDS|OPTIONS|EXAMPLES|EXIT STATUS',
+                '-exitval'  => 'NOEXIT',
+            }
+        );
+        return $EXIT_OK;
+    }
+    print <<'END_USAGE' or croak $OS_ERROR;
+nt - markdown filesystem store with namespaces
+
+Usage: nt [options] <command> [arg]
+
+Commands:
+  init              Create the store ($HOME/.nt)
+  list [ns]         List record keys (optionally scoped to a namespace)
+  view <key>        Print a record (--meta or --body for partial)
+  add <key>         Create from stdin or $EDITOR (fails if exists)
+  put <key>         Upsert from stdin or $EDITOR
+  edit <key>        Open existing record in $EDITOR
+  delete <key>      Remove a record
+  find <pattern>    Print keys matching regex (body or frontmatter)
+
+Common options:
+  -b DIR            Base directory (default: $HOME/.nt)
+  -m KEY=VALUE      Set frontmatter field on add/put (repeatable)
+  --json/--no-json  Force or disable JSON output (auto by TTY)
+
+Pipelines: stdout JSON when not a TTY; stdin replaces body when piped.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not-found, 4 exists.
+
+Run `nt usage -v` for examples and full option detail.
+END_USAGE
     return $EXIT_OK;
 }
 
