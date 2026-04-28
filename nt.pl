@@ -1,5 +1,8 @@
 #!/usr/bin/env perl
 
+use FindBin qw( $RealBin );
+use lib "$RealBin/local/lib/perl5";
+
 use strict;
 use warnings;
 
@@ -124,7 +127,7 @@ use Path::Tiny   qw( path tempfile );
 use Pod::Usage   qw( pod2usage );
 use Readonly     qw( Readonly );
 
-our $VERSION = 0.13;
+our $VERSION = 0.30;
 
 Readonly my $EXIT_OK        => 0;
 Readonly my $EXIT_ERROR     => 1;
