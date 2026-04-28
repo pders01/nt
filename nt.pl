@@ -3,277 +3,353 @@
 use strict;
 use warnings;
 
-use Carp         qw( carp croak );
-use English      qw( -no_match_vars);
-use Getopt::Long qw( GetOptions );
-use IPC::Open3   qw( open3 );
-use List::Util   qw( reduce );
-use Path::Tiny   qw( path );
+package NT::Store;
+
+use Carp       qw( croak );
+use Path::Tiny qw( path );
+use Readonly   qw( Readonly );
+
+Readonly my $FM_RE => qr/\A---\n(.*?)\n---\n(.*)\z/smx;
+Readonly my $KV_RE => qr/\A([^:\s][^:]*):\s*(.*)\z/smx;
+
+sub new {
+    my ( $class, %opts ) = @_;
+    my $base = path( $opts{'base_directory'} // "$ENV{'HOME'}/.nt" );
+    return bless { 'base' => $base }, $class;
+}
+
+sub init {
+    my ($self) = @_;
+    $self->{'base'}->mkpath;
+    return;
+}
+
+sub list {
+    my ( $self, $ns ) = @_;
+    my $root = $self->{'base'};
+    return () if !$root->is_dir;
+    my $scope = length $ns ? $root->child($ns) : $root;
+    return () if !$scope->is_dir;
+    my $it = $scope->iterator( { 'recurse' => 1 } );
+    my @keys;
+    while ( defined( my $p = $it->() ) ) {
+        push @keys, $self->_key_from_path($p) if !$p->is_dir && $p =~ m/[.]md\z/smx;
+    }
+    return sort @keys;
+}
+
+sub get {
+    my ( $self, $key ) = @_;
+    my $file = $self->_path_for($key);
+    return if !$file->is_file;
+    my $rec = $self->_parse( scalar $file->slurp_utf8 );
+    @{$rec}{qw( key path )} = ( $key, $file );
+    return $rec;
+}
+
+sub add {
+    my ( $self, $key, $rec ) = @_;
+    croak "exists: $key" if $self->_path_for($key)->is_file;
+    return $self->put( $key, $rec );
+}
+
+sub put {
+    my ( $self, $key, $rec ) = @_;
+    my $file = $self->_path_for($key);
+    $file->parent->mkpath;
+    $file->spew_utf8( $self->_serialize($rec) );
+    return 1;
+}
+
+sub remove {
+    my ( $self, $key ) = @_;
+    my $file = $self->_path_for($key);
+    return 0 if !$file->is_file;
+    $file->remove;
+    return 1;
+}
+
+sub find {
+    my ( $self, $pattern ) = @_;
+    my $re = qr/$pattern/smx;
+    return grep {
+        my $r = $self->get($_);
+        $r->{'body'} =~ $re || $r->{'meta_raw'} =~ $re;
+    } $self->list(q{});
+}
+
+sub _path_for {
+    my ( $self, $key ) = @_;
+    croak 'empty key' if !length $key;
+    return $self->{'base'}->child("$key.md");
+}
+
+sub _key_from_path {
+    my ( $self, $file ) = @_;
+    my $rel = $file->relative( $self->{'base'} )->stringify;
+    $rel =~ s/[.]md\z//smx;
+    return $rel;
+}
+
+sub _parse {
+    my ( $self, $raw ) = @_;
+    if ( $raw =~ $FM_RE ) {
+        my ( $mr, $body ) = ( $1, $2 );
+        my %meta;
+        for my $line ( split /\n/smx, $mr ) {
+            $meta{$1} = $2 if $line =~ $KV_RE;
+        }
+        return { 'meta' => \%meta, 'meta_raw' => $mr, 'body' => $body };
+    }
+    return { 'meta' => {}, 'meta_raw' => q{}, 'body' => $raw };
+}
+
+sub _serialize {
+    my ( $self, $rec ) = @_;
+    my $head = q{};
+    if ( length $rec->{'meta_raw'} ) {
+        $head = "---\n$rec->{'meta_raw'}\n---\n";
+    }
+    elsif ( %{ $rec->{'meta'} || {} } ) {
+        my $meta = $rec->{'meta'};
+        $head = "---\n" . join( q{}, map {"$_: $meta->{$_}\n"} sort keys %{$meta} ) . "---\n";
+    }
+    return $head . ( $rec->{'body'} // q{} );
+}
+
+package main;
+
+use strict;
+use warnings;
+
+use Carp         qw( croak );
+use English      qw( -no_match_vars );
+use Getopt::Long qw( GetOptions :config no_ignore_case bundling );
+use JSON::PP     qw( encode_json );
+use Path::Tiny   qw( path tempfile );
 use Pod::Usage   qw( pod2usage );
 use Readonly     qw( Readonly );
 
-use Symbol 'gensym';
+our $VERSION = 0.13;
 
-our $VERSION = 0.12;
+Readonly my $EXIT_OK        => 0;
+Readonly my $EXIT_ERROR     => 1;
+Readonly my $EXIT_USAGE     => 2;
+Readonly my $EXIT_NOT_FOUND => 3;
+Readonly my $EXIT_EXISTS    => 4;
 
 Readonly my $COMMANDS => {
-    usage  => 1,
-    init   => 1,
-    list   => 1,
-    view   => 1,
-    add    => 1,
-    edit   => 1,
-    delete => 1,
-};
-
-Readonly my $CONFIG => {
-    base_directory => "$ENV{'HOME'}/.nt",
-    glow           => 1,
-    gum            => 1,
+    'usage'  => \&_cmd_usage,
+    'init'   => \&_cmd_init,
+    'list'   => \&_cmd_list,
+    'view'   => \&_cmd_view,
+    'add'    => \&_cmd_add,
+    'put'    => \&_cmd_put,
+    'edit'   => \&_cmd_edit,
+    'delete' => \&_cmd_delete,
+    'find'   => \&_cmd_find,
 };
 
 sub main {
-    my $options = {};
-    if ( !GetOptions( 'base_directory|b=s' => \$options->{'base_directory'} ) ) {
-        croak('Error in command line arguments');
-    }
+    my $opts = {};
+    GetOptions(
+        'base_directory|b=s' => \$opts->{'base'},
+        'json!'              => \$opts->{'json'},
+        'meta'               => \$opts->{'meta_only'},
+        'body'               => \$opts->{'body_only'},
+        'set|m=s@'           => \$opts->{'set'},
+    ) or exit $EXIT_USAGE;
 
-    $options->{'command'} = _validate( 'command', ( shift @ARGV ) // 'default' );
-    $options->{'name'}    = shift @ARGV;
+    my $cmd = shift @ARGV // 'usage';
+    my $arg = shift @ARGV;
+    my $sub = $COMMANDS->{$cmd} // \&_cmd_usage;
 
-    {   usage   => sub { _usage(2) },
-        init    => sub { _init() },
-        list    => sub { _list() },
-        view    => sub { _view( $options->{'name'} ) },
-        add     => sub { _add( $options->{'name'} ) },
-        edit    => sub { _edit( $options->{'name'} ) },
-        delete  => sub { _delete( $options->{'name'} ) },
-        default => sub { _usage(0) },
-    }->{ $options->{'command'} }->();
-
-    return;
+    my $store = NT::Store->new( 'base_directory' => $opts->{'base'} );
+    exit $sub->( $store, $arg, $opts );
 }
 
-sub _usage {
-    my $verbose_level = shift;
-
-    pod2usage( { -verbose => $verbose_level } );
-
-    return;
+sub _cmd_usage {
+    pod2usage( { '-verbose' => 1, '-exitval' => 'NOEXIT' } );
+    return $EXIT_OK;
 }
 
-sub _init {
-    if ( -d $CONFIG->{'base_directory'} ) {
-        return;
-    }
-
-    my $path = _get_path();
-    if ( !$path ) {
-        return;
-    }
-
-    $path->mkpath;
-
-    return;
+sub _cmd_init {
+    my ($store) = @_;
+    $store->init;
+    return $EXIT_OK;
 }
 
-sub _list {
-    if ( !-d $CONFIG->{'base_directory'} ) {
-        return;
+sub _cmd_list {
+    my ( $store, $ns, $opts ) = @_;
+    my @keys = $store->list( $ns // q{} );
+    if ( _json_mode($opts) ) {
+        print encode_json( \@keys ), "\n" or croak $OS_ERROR;
+    }
+    else {
+        print "$_\n" or croak $OS_ERROR for @keys;
+    }
+    return $EXIT_OK;
+}
+
+sub _cmd_view {
+    my ( $store, $key, $opts ) = @_;
+    return _die( 'missing key', $EXIT_USAGE ) if !defined $key;
+    my $rec = $store->get($key) or return _die( "not found: $key", $EXIT_NOT_FOUND );
+
+    if ( _json_mode($opts) ) {
+        my $payload = {
+            'key'  => $rec->{'key'},
+            'meta' => $rec->{'meta'},
+            'body' => $rec->{'body'},
+        };
+        $payload = $rec->{'meta'} if $opts->{'meta_only'};
+        $payload = $rec->{'body'} if $opts->{'body_only'};
+        print encode_json($payload), "\n" or croak $OS_ERROR;
+        return $EXIT_OK;
     }
 
-    my $path = _get_path();
-    if ( !$path ) {
-        return;
+    if ( $opts->{'meta_only'} ) {
+        print $rec->{'meta_raw'}, "\n" or croak $OS_ERROR if length $rec->{'meta_raw'};
+        return $EXIT_OK;
+    }
+    if ( $opts->{'body_only'} ) {
+        print $rec->{'body'} or croak $OS_ERROR;
+        return $EXIT_OK;
+    }
+    print NT::Store->_serialize($rec) or croak $OS_ERROR;
+    return $EXIT_OK;
+}
+
+sub _cmd_add {
+    my ( $store, $key, $opts ) = @_;
+    return _die( 'missing key',  $EXIT_USAGE )  if !defined $key;
+    return _die( "exists: $key", $EXIT_EXISTS ) if $store->get($key);
+    return _write( $store, $key, $opts, undef );
+}
+
+sub _cmd_put {
+    my ( $store, $key, $opts ) = @_;
+    return _die( 'missing key', $EXIT_USAGE ) if !defined $key;
+    return _write( $store, $key, $opts, $store->get($key) );
+}
+
+sub _cmd_edit {
+    my ( $store, $key ) = @_;
+    return _die( 'missing key', $EXIT_USAGE ) if !defined $key;
+    my $rec = $store->get($key) or return _die( "not found: $key", $EXIT_NOT_FOUND );
+    _open_editor( $rec->{'path'} );
+    return $EXIT_OK;
+}
+
+sub _cmd_delete {
+    my ( $store, $key ) = @_;
+    return _die( 'missing key', $EXIT_USAGE ) if !defined $key;
+    return $store->remove($key) ? $EXIT_OK : _die( "not found: $key", $EXIT_NOT_FOUND );
+}
+
+sub _cmd_find {
+    my ( $store, $pattern, $opts ) = @_;
+    return _die( 'missing pattern', $EXIT_USAGE ) if !defined $pattern;
+    my @keys = $store->find($pattern);
+    if ( _json_mode($opts) ) {
+        print encode_json( \@keys ), "\n" or croak $OS_ERROR;
+    }
+    else {
+        print "$_\n" or croak $OS_ERROR for @keys;
+    }
+    return $EXIT_OK;
+}
+
+sub _write {
+    my ( $store, $key, $opts, $existing ) = @_;
+    my $rec     = $existing // { 'meta' => {}, 'meta_raw' => q{}, 'body' => q{} };
+    my $stdin   = -t \*STDIN ? undef : do { local $RS = undef; scalar <STDIN> };     ## no critic (InputOutput::ProhibitInteractiveTest)
+    my $has_set = $opts->{'set'} && @{ $opts->{'set'} };
+
+    if ( defined $stdin && ( length $stdin || !$has_set ) ) {
+        $rec->{'body'} = $stdin;
+    }
+    elsif ( !defined $stdin && !$has_set ) {
+        $rec->{'body'} = _editor_body($rec);
     }
 
-    my $files = [ $path->children(qr/^[^.]/smx) ];
-    if ( $CONFIG->{'gum'} ) {
-        my $file = _prompt($files);
-        if ( !$file ) {
-            return;
+    if ($has_set) {
+        for my $kv ( @{ $opts->{'set'} } ) {
+            my ( $k, $v ) = split /=/smx, $kv, 2;
+            $rec->{'meta'}{$k} = $v // q{};
         }
-
-        my $action = _prompt( [ 'view', 'edit' ] );
-        if ( $action eq 'view' ) {
-            _view_file($file);
-
-            return;
-        }
-
-        if ( $action eq 'edit' ) {
-            _edit_file($file);
-
-            return;
-        }
-
-        return;
+        $rec->{'meta_raw'} = q{};
     }
-
-    for my $file ( $files->@* ) {
-        print "$file\n" or croak $OS_ERROR;
-    }
-
-    return;
+    $store->put( $key, $rec );
+    return $EXIT_OK;
 }
 
-sub _prompt {
-    my $choices = shift;
-
-    my ( $prompt, $choice );
-    if ( $CONFIG->{'gum'} ) {
-        $prompt = join q{ }, 'gum', 'choose', $choices->@*;
-        $choice = qx/$prompt/;
-
-        return $choice;
-    }
-
-    return $choice;
+sub _editor_body {
+    my ($rec) = @_;
+    my $tmp = tempfile( 'SUFFIX' => '.md' );
+    $tmp->spew_utf8( $rec->{'body'} // q{} );
+    _open_editor($tmp);
+    return scalar $tmp->slurp_utf8;
 }
 
-sub _view {
-    my $name = shift;
-    if ( !$name ) {
-        return;
-    }
-
-    if ( !-d $CONFIG->{'base_directory'} ) {
-        return;
-    }
-
-    my $path = _get_path( [$name] );
-    if ( !$path ) {
-        return;
-    }
-
-    #my $file = ( reduce { $a->{ $b->basename } = $b; $a } {}, $path->children(qr/^[^.]/smx) )->{$name};
-    #if ( !$file ) {
-    #    return;
-    #}
-
-    _view_file($path);
-
-    return;
-}
-
-sub _view_file {
-    my $file = shift;
-
-    if ( $CONFIG->{'glow'} ) {
-        system 'glow', '-p', $file;
-
-        return;
-    }
-
-    return;
-}
-
-sub _add {
-    my $name = shift;
-    if ( !$name ) {
-        return;
-    }
-
-    my $path = _get_path( [$name] );
-    if ( !$path ) {
-        return;
-    }
-
-    $path->touch;
-
-    return;
-}
-
-sub _edit {
-    my $name = shift;
-    if ( !$name ) {
-        return;
-    }
-
-    my $path = _get_path( [$name] );
-    if ( !$path ) {
-        return;
-    }
-
-    _edit_file($path);
-
-    return;
-}
-
-sub _edit_file {
-    my $file = shift;
-
+sub _open_editor {
+    my ($file) = @_;
     my $editor = $ENV{'EDITOR'} || 'vi';
-
-    system $editor, $file;
-
-    my $exit_status = $CHILD_ERROR >> 8;
-    if ( $exit_status != 0 ) {
-        croak "Editor exited with non-zero status: $exit_status";
-    }
-
+    system $editor, "$file";
+    my $rc = $CHILD_ERROR >> 8;
+    croak "editor exited $rc" if $rc != 0;
     return;
 }
 
-sub _delete {
-    my $name = shift;
-    if ( !$name ) {
-        return;
-    }
-
-    my $path = _get_path( [$name] );
-    if ( !$path ) {
-        return;
-    }
-
-    if ( !$path->remove ) {
-        croak "Couldn't delete $name";
-    }
-
-    return;
+sub _json_mode {
+    my ($opts) = @_;
+    return defined $opts->{'json'} ? $opts->{'json'} : !-t \*STDOUT;    ## no critic (InputOutput::ProhibitInteractiveTest)
 }
 
-sub _validate {
-    my ( $type, $param ) = @_;
-
-    return { command => sub { $COMMANDS->{$param} } }->{$type}->() ? $param : 'default';
-}
-
-sub _get_path {
-    my $components = shift;
-
-    $components //= [];
-
-    my $path = path( join q{/}, $CONFIG->{'base_directory'}, $components->@* );
-
-    return $path;
+sub _die {
+    my ( $msg, $code ) = @_;
+    print {*STDERR} "nt: $msg\n" or croak $OS_ERROR;
+    return $code // $EXIT_ERROR;
 }
 
 main();
 
+__END__
+
 =head1 NAME
 
-nt - A script to manage a collection of notes with commands to initialize, list, add, edit, and delete notes.
+nt - markdown filesystem store with namespaces
 
 =head1 SYNOPSIS
 
-nt [options] <command> [name]
-
- Options:
-   -b, --base_directory  Set the base directory for storing notes (default: $HOME/.nt)
-
- Commands:
-   usage                Display the usage information
-   init                 Initialize the notes directory
-   list                 List all notes
-   view [name]          View an existing note with the specified name
-   add [name]           Add a new note with the specified name
-   edit [name]          Edit an existing note with the specified name
-   delete [name]        Delete an existing note with the specified name
+nt [-b dir] [--[no-]json] <command> [arg] [-m k=v ...]
 
 =head1 DESCRIPTION
 
-This script provides a command-line interface for managing a collection of notes stored in a directory. It supports basic operations such as initializing a storage directory, listing notes, adding new notes, editing existing notes, and deleting notes.
+A self-contained, agent-friendly markdown filesystem store. Records
+are plain markdown files organized into namespaces (subdirectories),
+with optional Jekyll-style frontmatter. The CLI is TTY-aware: it
+opens an editor for humans, reads stdin for pipelines, and emits
+JSON when stdout is not a terminal.
+
+=head1 USAGE
+
+A record is a markdown file at C<$base/$ns/$name.md>. Frontmatter is
+optional; when present it follows the Jekyll/Hugo convention (file
+starts with C<--->, ends at the next C<--->). Records without
+frontmatter round-trip byte-for-byte. Frontmatter the parser does not
+understand is preserved verbatim and re-emitted on write.
+
+C<add> and C<put> read the body from stdin when stdin is not a TTY,
+else open C<$EDITOR>. When C<-m> is given without piped input, the
+body is preserved and only meta is patched. C<view>, C<list>, and
+C<find> emit JSON when stdout is not a TTY.
+
+=head1 REQUIRED ARGUMENTS
+
+A command. One of: C<init>, C<list>, C<view>, C<add>, C<put>, C<edit>,
+C<delete>, C<find>, C<usage>. Most commands take a key (or pattern,
+for C<find>) as the second positional argument.
 
 =head1 OPTIONS
 
@@ -281,100 +357,67 @@ This script provides a command-line interface for managing a collection of notes
 
 =item B<-b, --base_directory>
 
-Specify the base directory where notes are stored. If not provided, the default is C<$HOME/.nt>.
+Base directory for the store. Defaults to C<$HOME/.nt>.
+
+=item B<--json / --no-json>
+
+Force JSON or line-based output. Defaults to JSON when stdout is not a
+TTY, line-based otherwise.
+
+=item B<--meta>
+
+For C<view>: emit only the frontmatter (raw block, or parsed hash in
+JSON mode).
+
+=item B<--body>
+
+For C<view>: emit only the body.
+
+=item B<-m, --set k=v>
+
+For C<add> and C<put>: set a frontmatter key. Repeatable.
 
 =back
 
-=head1 COMMANDS
+=head1 DIAGNOSTICS
 
-=over 4
+Errors are written to stderr prefixed with C<nt:>. Editor failure
+during C<edit>/C<add>/C<put> dies with C<editor exited N>.
 
-=item B<usage>
+=head1 EXIT STATUS
 
-Displays the usage information and exits.
-
-=item B<init>
-
-Initializes the base directory for storing notes if it doesn't already exist.
-
-=item B<list>
-
-Lists all notes in the base directory. If the "gum" command is enabled in the configuration, it will prompt the user to view or edit a selected note.
-
-=item B<view [name]>
-
-Opens the note in the base directory with the specified name.
-
-=item B<add [name]>
-
-Adds a new note with the specified name. The note will be created as an empty file in the base directory.
-
-=item B<edit [name]>
-
-Edits an existing note with the specified name. The script will open the note in the editor specified by the C<$EDITOR> environment variable or default to "vi".
-
-=item B<delete [name]>
-
-Deletes the note with the specified name from the base directory.
-
-=back
+  0  success
+  1  generic error
+  2  usage error
+  3  key not found
+  4  key already exists (C<add> only)
 
 =head1 CONFIGURATION
 
-The script uses a configuration hashref to store settings such as the base directory, and whether to use external tools like "glow" and "gum".
+The C<EDITOR> environment variable selects the editor for C<edit> and
+the interactive C<add>/C<put> path; defaults to C<vi>.
 
-=over 4
+=head1 DEPENDENCIES
 
-=item B<$CONFIG-E<gt>{'base_directory'}>
+Core: L<Carp>, L<English>, L<Getopt::Long>, L<JSON::PP>, L<Pod::Usage>.
+Non-core: L<Path::Tiny>, L<Readonly>.
 
-The directory where all notes are stored. Defaults to C<$HOME/.nt>.
+=head1 INCOMPATIBILITIES
 
-=item B<$CONFIG-E<gt>{'glow'}>
+None known.
 
-A flag indicating whether to use the "glow" tool for rendering markdown files.
+=head1 BUGS AND LIMITATIONS
 
-=item B<$CONFIG-E<gt>{'gum'}>
-
-A flag indicating whether to use the "gum" tool for interactive prompts.
-
-=back
-
-=head1 EXAMPLES
-
-=over 4
-
-=item Initialize the notes directory:
-
-    nt init
-
-=item List all notes:
-
-    nt list
-
-=item Add a new note called "meeting_notes":
-
-    nt add meeting_notes
-
-=item Edit an existing note called "meeting_notes":
-
-    nt edit meeting_notes
-
-=item Delete a note called "meeting_notes":
-
-    nt delete meeting_notes
-
-=back
+The flat C<key: value> frontmatter writer does not escape values
+containing newlines or unbalanced colons. Records that need richer
+YAML must be written via stdin so the raw block round-trips verbatim.
 
 =head1 AUTHOR
 
 Paul Derscheid, <me@paulderscheid.xyz>
 
-=head1 VERSION
+=head1 LICENSE AND COPYRIGHT
 
-This documentation refers to version 0.12 of nt.
-
-=head1 COPYRIGHT AND LICENSE
-
-This script is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+Same terms as Perl itself.
 
 =cut

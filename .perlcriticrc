@@ -1,3 +1,8 @@
 severity  = 1
 verbose   = 5
 theme     = pbp && core
+
+# Postfix `if`/`unless`/`for` is allowed for short single-statement guards;
+# block form is required by PBP but loses too much in a codebase that
+# prizes conciseness for short, readable lines.
+[-ControlStructures::ProhibitPostfixControls]
