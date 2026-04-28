@@ -169,7 +169,12 @@ sub main {
 }
 
 sub _cmd_usage {
-    pod2usage( { '-verbose' => 1, '-exitval' => 'NOEXIT' } );
+    pod2usage(
+        {   '-verbose'  => 99,
+            '-sections' => 'SYNOPSIS|DESCRIPTION|COMMANDS|OPTIONS|EXAMPLES|EXIT STATUS',
+            '-exitval'  => 'NOEXIT',
+        }
+    );
     return $EXIT_OK;
 }
 
@@ -322,44 +327,82 @@ nt - markdown filesystem store with namespaces
 
 =head1 SYNOPSIS
 
-nt [-b dir] [--[no-]json] <command> [arg] [-m k=v ...]
+  nt [-b DIR] [--[no-]json] <command> [arg] [-m KEY=VALUE ...]
 
 =head1 DESCRIPTION
 
 A self-contained, agent-friendly markdown filesystem store. Records
-are plain markdown files organized into namespaces (subdirectories),
-with optional Jekyll-style frontmatter. The CLI is TTY-aware: it
-opens an editor for humans, reads stdin for pipelines, and emits
-JSON when stdout is not a terminal.
+are plain markdown files at C<$base/$namespace/$name.md>, with
+optional Jekyll-style frontmatter. The CLI is TTY-aware: it opens
+C<$EDITOR> for humans, reads stdin in pipelines, and emits JSON when
+stdout is not a terminal. Records without frontmatter round-trip
+byte-for-byte, and frontmatter the parser does not understand is
+preserved verbatim.
+
+=head1 COMMANDS
+
+=over 4
+
+=item B<init>
+
+Create the base directory.
+
+=item B<list> [I<namespace>]
+
+Print record keys, one per line. Optionally scope to a namespace.
+
+=item B<view> I<key>
+
+Print a record (full file by default). Use C<--meta> for just the
+frontmatter, C<--body> for just the body.
+
+=item B<add> I<key>
+
+Strict-create a record. Fails with exit 4 if the key already exists.
+Body is read from stdin when piped, else C<$EDITOR> opens.
+
+=item B<put> I<key>
+
+Upsert a record. Same input rules as C<add>. With C<-m> alone (no
+piped input), only frontmatter is patched and the body is preserved.
+
+=item B<edit> I<key>
+
+Open an existing record in C<$EDITOR>.
+
+=item B<delete> I<key>
+
+Remove a record.
+
+=item B<find> I<pattern>
+
+Print keys whose body or frontmatter matches the regex.
+
+=item B<usage>
+
+Print this help.
+
+=back
 
 =head1 USAGE
 
-A record is a markdown file at C<$base/$ns/$name.md>. Frontmatter is
-optional; when present it follows the Jekyll/Hugo convention (file
-starts with C<--->, ends at the next C<--->). Records without
-frontmatter round-trip byte-for-byte. Frontmatter the parser does not
-understand is preserved verbatim and re-emitted on write.
-
-C<add> and C<put> read the body from stdin when stdin is not a TTY,
-else open C<$EDITOR>. When C<-m> is given without piped input, the
-body is preserved and only meta is patched. C<view>, C<list>, and
-C<find> emit JSON when stdout is not a TTY.
+See L</COMMANDS> for available verbs and L</EXAMPLES> for common
+flows. Run C<nt usage> for the same overview.
 
 =head1 REQUIRED ARGUMENTS
 
-A command. One of: C<init>, C<list>, C<view>, C<add>, C<put>, C<edit>,
-C<delete>, C<find>, C<usage>. Most commands take a key (or pattern,
-for C<find>) as the second positional argument.
+A command (see L</COMMANDS>). Most commands also take a I<key> (or a
+I<pattern>, for C<find>) as the second positional argument.
 
 =head1 OPTIONS
 
 =over 4
 
-=item B<-b, --base_directory>
+=item B<-b, --base_directory> I<dir>
 
 Base directory for the store. Defaults to C<$HOME/.nt>.
 
-=item B<--json / --no-json>
+=item B<--json> / B<--no-json>
 
 Force JSON or line-based output. Defaults to JSON when stdout is not a
 TTY, line-based otherwise.
@@ -373,11 +416,39 @@ JSON mode).
 
 For C<view>: emit only the body.
 
-=item B<-m, --set k=v>
+=item B<-m, --set> I<key>=I<value>
 
 For C<add> and C<put>: set a frontmatter key. Repeatable.
 
 =back
+
+=head1 EXAMPLES
+
+  # Initialize the store
+  nt init
+
+  # Create a record from stdin
+  echo "# Hello" | nt add greetings/hi
+
+  # Create a record with frontmatter, no body
+  nt add work/todo -m status=open -m owner=me </dev/null
+
+  # List, view, find
+  nt list
+  nt list work
+  nt view greetings/hi
+  nt view work/todo --meta --json
+  nt find 'TODO'
+
+  # Patch frontmatter without touching the body
+  nt put work/todo -m status=done
+
+  # Pipe and parse
+  nt list | jq '.[]'
+  nt find pattern | xargs -n1 nt view --body
+
+  # Edit interactively (opens $EDITOR)
+  nt edit work/todo
 
 =head1 DIAGNOSTICS
 
