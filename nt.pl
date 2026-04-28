@@ -47,12 +47,6 @@ sub get {
     return $rec;
 }
 
-sub add {
-    my ( $self, $key, $rec ) = @_;
-    croak "exists: $key" if $self->_path_for($key)->is_file;
-    return $self->put( $key, $rec );
-}
-
 sub put {
     my ( $self, $key, $rec ) = @_;
     my $file = $self->_path_for($key);
@@ -254,7 +248,8 @@ sub _cmd_delete {
 
 sub _cmd_find {
     my ( $store, $pattern, $opts ) = @_;
-    return _die( 'missing pattern', $EXIT_USAGE ) if !defined $pattern;
+    return _die( 'missing pattern',           $EXIT_USAGE ) if !defined $pattern;
+    return _die( "invalid pattern: $pattern", $EXIT_ERROR ) if !eval { qr/$pattern/smx; 1 };
     my @keys = $store->find($pattern);
     if ( _json_mode($opts) ) {
         print encode_json( \@keys ), "\n" or croak $OS_ERROR;
@@ -302,7 +297,7 @@ sub _open_editor {
     my $editor = $ENV{'EDITOR'} || 'vi';
     system $editor, "$file";
     my $rc = $CHILD_ERROR >> 8;
-    croak "editor exited $rc" if $rc != 0;
+    exit _die( "editor exited $rc", $EXIT_ERROR ) if $rc;
     return;
 }
 
