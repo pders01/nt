@@ -5,8 +5,8 @@ single Perl script.
 
 `nt` treats the filesystem as the database. Records are plain
 markdown files organized into namespaces (subdirectories) under
-`~/.nt/`. The CLI is TTY-aware: it opens `$EDITOR` for humans, reads
-stdin in pipelines, and emits JSON when stdout is not a terminal.
+`~/.nt/`. The CLI opens `$EDITOR` when stdin is interactive, reads
+stdin in pipelines, and emits structured JSON when explicitly requested.
 
 ## Why
 
@@ -17,7 +17,7 @@ stdin in pipelines, and emits JSON when stdout is not a terminal.
   byte-identical. Frontmatter the parser doesn't understand is
   preserved verbatim, so arbitrary YAML survives a write cycle.
 - **Agents and pipelines first-class.** Stable exit codes,
-  stdout/stderr discipline, auto-JSON in non-interactive contexts.
+  stdout/stderr discipline, and explicit structured JSON output.
 - **No external CLI dependencies.** Pure Perl. No `gum`, no `glow`,
   no editor plugins.
 
@@ -75,7 +75,7 @@ the default — `nt` never injects metadata you didn't ask for.
 | Flag | Effect |
 |---|---|
 | `-b`, `--base_directory DIR` | Base directory (default `$HOME/.nt`) |
-| `--json` / `--no-json` | Force or suppress JSON output |
+| `--json` / `--no-json` | Enable or disable JSON output (default: text) |
 | `--meta` | For `view`: emit only the frontmatter |
 | `--body` | For `view`: emit only the body |
 | `-m`, `--set k=v` | For `add`/`put`: set a frontmatter key (repeatable) |
@@ -94,12 +94,13 @@ Errors go to stderr, prefixed with `nt:`.
 
 ## Agent and pipeline usage
 
-`nt` adapts to non-interactive contexts without flags:
+`nt` uses text output by default so redirects and Unix pipelines retain
+their expected semantics. Agents can request structured output explicitly:
 
 ```sh
-# Auto-JSON when stdout is not a TTY
-nt list | jq '.[]'
-nt view work/todo --meta | jq '.tag'
+# Structured output for agents and JSON-aware tools
+nt list --json | jq '.[]'
+nt view work/todo --meta --json | jq '.tag'
 
 # Read body from stdin
 echo "Replacement body" | nt put work/todo
@@ -115,11 +116,11 @@ nt put work/todo < snapshot.md   # byte-identical write
 nt find 'TODO' | xargs -n1 nt view --body
 ```
 
-The TTY-aware behavior is always:
+The stream behavior is:
 
 - **stdin**: opens `$EDITOR` if a terminal; reads bytes if a pipe.
-- **stdout**: human format if a terminal; JSON if a pipe or redirect.
-- Both can be overridden with `--json` / `--no-json`.
+- **stdout**: text/raw output by default, including in pipes and redirects.
+- `--json` selects structured output; `--no-json` explicitly selects text.
 
 ## Frontmatter rules
 

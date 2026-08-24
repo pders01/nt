@@ -195,9 +195,9 @@ Commands:
 Common options:
   -b DIR            Base directory (default: $HOME/.nt)
   -m KEY=VALUE      Set frontmatter field on add/put (repeatable)
-  --json/--no-json  Force or disable JSON output (auto by TTY)
+  --json/--no-json  Enable or disable JSON output (default: text)
 
-Pipelines: stdout JSON when not a TTY; stdin replaces body when piped.
+Pipelines: stdout is text unless --json is set; piped stdin replaces body.
 Exit codes: 0 ok, 1 error, 2 usage, 3 not-found, 4 exists.
 
 Run `nt usage -v` for examples and full option detail.
@@ -336,7 +336,7 @@ sub _open_editor {
 
 sub _json_mode {
     my ($opts) = @_;
-    return defined $opts->{'json'} ? $opts->{'json'} : !-t \*STDOUT;    ## no critic (InputOutput::ProhibitInteractiveTest)
+    return $opts->{'json'} // 0;
 }
 
 sub _die {
@@ -361,9 +361,9 @@ nt - markdown filesystem store with namespaces
 
 A self-contained, agent-friendly markdown filesystem store. Records
 are plain markdown files at C<$base/$namespace/$name.md>, with
-optional Jekyll-style frontmatter. The CLI is TTY-aware: it opens
-C<$EDITOR> for humans, reads stdin in pipelines, and emits JSON when
-stdout is not a terminal. Records without frontmatter round-trip
+optional Jekyll-style frontmatter. The CLI opens C<$EDITOR> when
+stdin is a terminal, reads stdin in pipelines, and emits JSON when
+explicitly requested. Records without frontmatter round-trip
 byte-for-byte, and frontmatter the parser does not understand is
 preserved verbatim.
 
@@ -432,8 +432,8 @@ Base directory for the store. Defaults to C<$HOME/.nt>.
 
 =item B<--json> / B<--no-json>
 
-Force JSON or line-based output. Defaults to JSON when stdout is not a
-TTY, line-based otherwise.
+Enable or disable JSON output. Output is line-based or raw text by
+default; use C<--json> for structured output.
 
 =item B<--meta>
 
@@ -471,8 +471,10 @@ For C<add> and C<put>: set a frontmatter key. Repeatable.
   # Patch frontmatter without touching the body
   nt put work/todo -m status=done
 
-  # Pipe and parse
-  nt list | jq '.[]'
+  # Pipe and parse JSON explicitly
+  nt list --json | jq '.[]'
+
+  # Text output composes directly with Unix tools
   nt find pattern | xargs -n1 nt view --body
 
   # Edit interactively (opens $EDITOR)
