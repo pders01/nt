@@ -120,14 +120,20 @@ use strict;
 use warnings;
 
 use Carp         qw( croak );
+use Encode       qw( decode_utf8 );
 use English      qw( -no_match_vars );
 use Getopt::Long qw( GetOptions :config no_ignore_case bundling );
-use JSON::PP     qw( encode_json );
+use JSON::PP     ();
 use Path::Tiny   qw( path tempfile );
 use Pod::Usage   qw( pod2usage );
 use Readonly     qw( Readonly );
 
-our $VERSION = 0.30;
+our $VERSION = 0.31;
+
+# Records hold character data. Everything is decoded on the way in and encoded
+# exactly once on the way out; the JSON encoder is deliberately not in utf8 mode
+# so that the STDOUT layer stays the single encoding point.
+my $JSON = JSON::PP->new;
 
 Readonly my $EXIT_OK        => 0;
 Readonly my $EXIT_ERROR     => 1;
@@ -149,6 +155,11 @@ Readonly my $COMMANDS => {
 
 sub main {
     my $opts = {};
+
+    binmode STDOUT, ':encoding(UTF-8)' or croak $OS_ERROR;
+    binmode STDERR, ':encoding(UTF-8)' or croak $OS_ERROR;
+    local @ARGV = map { decode_utf8($_) } @ARGV;
+
     GetOptions(
         'base_directory|b=s' => \$opts->{'base'},
         'json!'              => \$opts->{'json'},
@@ -215,7 +226,7 @@ sub _cmd_list {
     my ( $store, $ns, $opts ) = @_;
     my @keys = $store->list( $ns // q{} );
     if ( _json_mode($opts) ) {
-        print encode_json( \@keys ), "\n" or croak $OS_ERROR;
+        print $JSON->encode( \@keys ), "\n" or croak $OS_ERROR;
     }
     else {
         print "$_\n" or croak $OS_ERROR for @keys;
@@ -236,7 +247,7 @@ sub _cmd_view {
         };
         $payload = $rec->{'meta'} if $opts->{'meta_only'};
         $payload = $rec->{'body'} if $opts->{'body_only'};
-        print encode_json($payload), "\n" or croak $OS_ERROR;
+        print $JSON->encode($payload), "\n" or croak $OS_ERROR;
         return $EXIT_OK;
     }
 
@@ -285,7 +296,7 @@ sub _cmd_find {
     return _die( "invalid pattern: $pattern", $EXIT_ERROR ) if !eval { qr/$pattern/smx; 1 };
     my @keys = $store->find($pattern);
     if ( _json_mode($opts) ) {
-        print encode_json( \@keys ), "\n" or croak $OS_ERROR;
+        print $JSON->encode( \@keys ), "\n" or croak $OS_ERROR;
     }
     else {
         print "$_\n" or croak $OS_ERROR for @keys;
@@ -295,8 +306,9 @@ sub _cmd_find {
 
 sub _write {
     my ( $store, $key, $opts, $existing ) = @_;
-    my $rec     = $existing // { 'meta' => {}, 'meta_raw' => q{}, 'body' => q{} };
-    my $stdin   = -t \*STDIN ? undef : do { local $RS = undef; scalar <STDIN> };     ## no critic (InputOutput::ProhibitInteractiveTest)
+    my $rec   = $existing // { 'meta' => {}, 'meta_raw' => q{}, 'body' => q{} };
+    my $stdin = -t \*STDIN ? undef : do { local $RS = undef; scalar <STDIN> };     ## no critic (InputOutput::ProhibitInteractiveTest)
+    $stdin = decode_utf8($stdin) if defined $stdin;
     my $has_set = $opts->{'set'} && @{ $opts->{'set'} };
 
     if ( defined $stdin && ( length $stdin || !$has_set ) ) {
