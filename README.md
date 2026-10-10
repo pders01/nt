@@ -1,149 +1,157 @@
 # nt
 
-A self-contained, agent-friendly markdown filesystem store, in a
-single Perl script.
+A markdown filesystem store in a single Perl script.
 
-`nt` treats the filesystem as the database. Records are plain
-markdown files organized into namespaces (subdirectories) under
-`~/.nt/`. The CLI opens `$EDITOR` when stdin is interactive, reads
-stdin in pipelines, and emits structured JSON when explicitly requested.
-
-## Why
-
-- **Plain files, plain markdown.** Records are `.md` files you can
-  `cp`, `grep`, `git`, or open in any editor. No database, no
-  proprietary format.
-- **Round-trip integrity.** Markdown without frontmatter stays
-  byte-identical. Frontmatter the parser doesn't understand is
-  preserved verbatim, so arbitrary YAML survives a write cycle.
-- **Agents and pipelines first-class.** Stable exit codes,
-  stdout/stderr discipline, and explicit structured JSON output.
-- **No external CLI dependencies.** Pure Perl. No `gum`, no `glow`,
-  no editor plugins.
+`nt` keeps records as UTF-8 `.md` files under `~/.nt/`. Use it to organize
+notes by namespace, edit them in your preferred editor, and work with them
+through shell pipelines or explicit JSON output. The files remain directly
+accessible to editors, search tools, and version control.
 
 ## Install
 
+Install the two non-core Perl dependencies and put the script on your `PATH`:
+
 ```sh
 cpan Path::Tiny Readonly
-chmod +x nt.pl
-mv nt.pl ~/bin/nt   # or anywhere on $PATH
+mkdir -p ~/bin
+cp nt.pl ~/bin/nt
+chmod +x ~/bin/nt
 ```
 
-`Carp`, `English`, `Getopt::Long`, `JSON::PP`, and `Pod::Usage` are
-core. `Path::Tiny` and `Readonly` are the only non-core dependencies.
+Make sure `~/bin` is on your `PATH`. Set `$EDITOR` to select an editor;
+`nt` defaults to `vi`.
 
 ## Quickstart
 
 ```sh
 nt init                              # create ~/.nt
-echo "# Hello" | nt add greetings/hi # create from stdin
-nt list                              # list keys
+printf '# Hello\n' | nt add greetings/hi
+nt list                              # list record keys
 nt view greetings/hi                 # print the record
-nt edit greetings/hi                 # open in $EDITOR
+nt edit greetings/hi                 # edit the file in $EDITOR
 nt delete greetings/hi
 ```
 
-## Concepts
+A **key** is a file path relative to the store, without the `.md` extension.
+For example, `work/projects/kafka` refers to
+`~/.nt/work/projects/kafka.md`.
 
-A **record** is a markdown file at `$base/$namespace/$name.md`. The
-**key** is the relative path without the `.md` extension —
-`work/projects/kafka` lives at `~/.nt/work/projects/kafka.md`.
+A **namespace** is a subdirectory. Records can live at the store root or
+in nested namespaces. Writes create parent directories as needed.
+Use `-b DIR` to select a different store:
 
-A **namespace** is just a subdirectory. Records can live at the root
-(no namespace prefix) or nested arbitrarily deep.
-
-**Frontmatter** is optional, Jekyll/Hugo-style YAML between two
-`---` lines at the top of the file. Records without frontmatter are
-the default — `nt` never injects metadata you didn't ask for.
+```sh
+nt -b ./notes list
+```
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `nt init` | Create the base directory |
-| `nt list [ns]` | Print record keys (optionally scoped) |
-| `nt view <key>` | Print a record (full / `--meta` / `--body`) |
-| `nt add <key>` | Strict-create (fails if exists) |
-| `nt put <key>` | Upsert |
-| `nt edit <key>` | Open existing record in `$EDITOR` |
+| `nt init` | Create the store directory |
+| `nt list [namespace]` | List sorted keys, recursively within the optional namespace |
+| `nt view <key>` | Print the full record, or select `--meta` or `--body` |
+| `nt add <key>` | Create a record; fail if it already exists |
+| `nt put <key>` | Create or update a record |
+| `nt edit <key>` | Open an existing record file in `$EDITOR` |
 | `nt delete <key>` | Remove a record |
-| `nt find <pattern>` | Print keys whose body or meta matches |
-| `nt usage` | Print a short overview (add `-v` for full help) |
+| `nt find <pattern>` | List keys whose body or frontmatter matches a Perl regular expression |
+| `nt usage` | Show a short overview; use `-v` for detailed help |
+
+For `add` and `put`, piped stdin supplies the body. With interactive stdin,
+`nt` opens an editor for the body unless `--set` is supplied. `edit` opens
+the complete file, including any frontmatter.
 
 ## Options
 
-| Flag | Effect |
+| Option | Effect |
 |---|---|
-| `-b`, `--base_directory DIR` | Base directory (default `$HOME/.nt`) |
-| `--json` / `--no-json` | Enable or disable JSON output (default: text) |
-| `--meta` | For `view`: emit only the frontmatter |
-| `--body` | For `view`: emit only the body |
-| `-m`, `--set k=v` | For `add`/`put`: set a frontmatter key (repeatable) |
+| `-b`, `--base_directory DIR` | Store directory; defaults to `$HOME/.nt` |
+| `--json` / `--no-json` | Select JSON or text output; defaults to text |
+| `--meta` | For `view`, show only frontmatter |
+| `--body` | For `view`, show only the body |
+| `-m`, `--set KEY=VALUE` | For `add` and `put`, set a frontmatter field; repeatable |
+| `-v`, `--verbose` | For `usage`, show detailed help |
+
+## Pipelines and JSON
+
+Text output is the default, including in pipes and redirects:
+
+```sh
+nt list work
+nt view work/todo --body > todo.md
+printf 'Replacement body\n' | nt put work/todo
+nt find 'TODO' | while IFS= read -r key; do nt view "$key" --body; done
+```
+
+Request JSON for agents and tools that need structured data:
+
+```sh
+nt list --json
+nt view work/todo --json
+nt view work/todo --meta --json
+```
+
+- `list` and `find` return arrays of keys.
+- `view` returns an object with `key`, `meta`, and `body`.
+- `view --meta` returns the parsed metadata object.
+- `view --body` returns the body as a JSON string.
+
+`--json` affects these read commands; successful writes produce no output.
+
+## Frontmatter
+
+Frontmatter is optional. To add simple metadata:
+
+```sh
+printf '# Tasks\n' | nt add work/todo -m status=open
+nt put work/todo -m status=done
+```
+
+A metadata-only update leaves the body unchanged when stdin is interactive
+or empty. Nonempty piped input replaces the body even when `--set` is used.
+
+`nt` recognizes a frontmatter block at the start of a file, with opening
+and closing `---` lines terminated by newlines:
+
+```markdown
+---
+status: open
+tag: work
+---
+# Tasks
+
+- Review the proposal
+```
+
+The parser extracts simple `key: value` lines and retains the raw block.
+Updates that do not use `--set` preserve existing raw frontmatter.
+`--set` rebuilds the block from parsed fields in sorted order, so comments,
+nested YAML, and other unparsed content are not preserved by that operation.
+
+Piped input to `add` or `put` is treated as body text, not parsed as a full
+record. To edit or replace frontmatter directly, use `nt edit` or work with
+the `.md` file itself. Piping a full record back into an existing record
+with frontmatter can duplicate its metadata block.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Generic error |
+| `1` | Error, such as an invalid search pattern or editor failure |
 | `2` | Usage error |
-| `3` | Key not found |
-| `4` | Key already exists (`add` only) |
+| `3` | Record not found |
+| `4` | Record already exists (`add`) |
 
-Errors go to stderr, prefixed with `nt:`.
-
-## Agent and pipeline usage
-
-`nt` uses text output by default so redirects and Unix pipelines retain
-their expected semantics. Agents can request structured output explicitly:
-
-```sh
-# Structured output for agents and JSON-aware tools
-nt list --json | jq '.[]'
-nt view work/todo --meta --json | jq '.tag'
-
-# Read body from stdin
-echo "Replacement body" | nt put work/todo
-
-# Patch frontmatter without touching the body
-nt put work/todo -m status=done -m closed_at=2026-04-28
-
-# Round-trip a record
-nt view work/todo > snapshot.md
-nt put work/todo < snapshot.md   # byte-identical write
-
-# Search and act
-nt find 'TODO' | xargs -n1 nt view --body
-```
-
-The stream behavior is:
-
-- **stdin**: opens `$EDITOR` if a terminal; reads bytes if a pipe.
-- **stdout**: text/raw output by default, including in pipes and redirects.
-- `--json` selects structured output; `--no-json` explicitly selects text.
-
-## Frontmatter rules
-
-`nt` follows the Jekyll/Hugo convention:
-
-- Frontmatter exists only if the file's first line is exactly `---`
-  *and* a closing `---` line follows somewhere in the file.
-- Inside the body, `---` is always a horizontal rule, never a
-  delimiter.
-- The parser extracts `key: value` pairs into a hash, but also keeps
-  the raw block verbatim. On write, raw is preferred — so anything
-  the parser doesn't understand round-trips intact.
-- Setting `-m k=v` re-serializes the frontmatter from the parsed
-  hash, dropping non-key:value lines. Use stdin round-trip for
-  records that contain richer YAML.
+Command errors are written to stderr with an `nt:` prefix.
 
 ## Limitations
 
-- The flat key:value frontmatter writer doesn't escape values
-  containing newlines or unbalanced colons. Records that need richer
-  YAML must be written via stdin so the raw block round-trips.
-- `find` reads every record; for large stores, prefer
-  `grep -lr ... ~/.nt`.
+- Frontmatter parsing is not a full YAML implementation. The metadata writer
+  does not quote or escape values; edit the file directly for richer YAML.
+- `find` reads every record. For large stores, filesystem search tools such
+  as `grep` or `rg` may be more suitable.
 
 ## License
 
