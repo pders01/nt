@@ -68,6 +68,10 @@ For `add` and `put`, piped stdin supplies the body. With interactive stdin,
 `nt` opens an editor for the body unless `--set` is supplied. `edit` opens
 the complete file, including any frontmatter.
 
+`add` creates records exclusively. If another process creates the record while
+input is being prepared, `add` returns exit code `4` without replacing it.
+`put` remains an upsert; concurrent updates are last-writer-wins.
+
 ## Options
 
 | Option | Effect |

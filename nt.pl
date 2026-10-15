@@ -9,6 +9,9 @@ use warnings;
 package NT::Store;
 
 use Carp       qw( croak );
+use English    qw( -no_match_vars );
+use Errno      qw( EEXIST );
+use Fcntl      qw( O_WRONLY O_CREAT O_EXCL );
 use Path::Tiny qw( path );
 use Readonly   qw( Readonly );
 
@@ -52,6 +55,23 @@ sub get {
     my $rec = $self->_parse( scalar $file->slurp_utf8 );
     @{$rec}{qw( key path )} = ( $key, $file );
     return $rec;
+}
+
+sub add {
+    my ( $self, $key, $rec ) = @_;
+    my $file = $self->_path_for($key);
+    $file->parent->mkpath;
+
+    # The earlier existence check is only a fast path; this decides who wins.
+    my $fh;
+    if ( !sysopen $fh, "$file", O_WRONLY | O_CREAT | O_EXCL ) {
+        return 0 if $OS_ERROR == EEXIST;
+        croak "create $file: $OS_ERROR";
+    }
+    binmode $fh, ':raw:encoding(UTF-8)' or croak $OS_ERROR;
+    print {$fh} $self->_serialize($rec) or croak $OS_ERROR;
+    close $fh                           or croak $OS_ERROR;
+    return 1;
 }
 
 sub put {
@@ -292,13 +312,13 @@ sub _cmd_add {
     my ( $store, $key, $opts ) = @_;
     return _die( 'missing key',  $EXIT_USAGE )  if !defined $key;
     return _die( "exists: $key", $EXIT_EXISTS ) if $store->get($key);
-    return _write( $store, $key, $opts, undef );
+    return _write( $store, $key, $opts, undef, 'add' );
 }
 
 sub _cmd_put {
     my ( $store, $key, $opts ) = @_;
     return _die( 'missing key', $EXIT_USAGE ) if !defined $key;
-    return _write( $store, $key, $opts, $store->get($key) );
+    return _write( $store, $key, $opts, scalar $store->get($key), 'put' );
 }
 
 sub _cmd_edit {
@@ -330,7 +350,7 @@ sub _cmd_find {
 }
 
 sub _write {
-    my ( $store, $key, $opts, $existing ) = @_;
+    my ( $store, $key, $opts, $existing, $method ) = @_;
     my $rec   = $existing // { 'meta' => {}, 'meta_raw' => q{}, 'body' => q{} };
     my $stdin = -t \*STDIN ? undef : do { local $RS = undef; scalar <STDIN> };     ## no critic (InputOutput::ProhibitInteractiveTest)
     $stdin = decode_utf8($stdin) if defined $stdin;
@@ -350,8 +370,7 @@ sub _write {
         }
         $rec->{'meta_raw'} = q{};
     }
-    $store->put( $key, $rec );
-    return $EXIT_OK;
+    return $store->$method( $key, $rec ) ? $EXIT_OK : _die( "exists: $key", $EXIT_EXISTS );
 }
 
 sub _editor_body {
@@ -430,7 +449,8 @@ frontmatter, C<--body> for just the body.
 
 =item B<add> I<key>
 
-Strict-create a record. Fails with exit 4 if the key already exists.
+Strict-create a record. Fails with exit 4 if the key already exists,
+including when another process creates it while input is being prepared.
 Body is read from stdin when piped, else C<$EDITOR> opens.
 
 =item B<put> I<key>
