@@ -15,9 +15,13 @@ use Readonly   qw( Readonly );
 Readonly my $FM_RE => qr/\A---\n(.*?)\n---\n(.*)\z/smx;
 Readonly my $KV_RE => qr/\A([^:\s][^:]*):\s*(.*)\z/smx;
 
+# /a keeps drive letters ASCII without restricting Unicode record names.
+Readonly my $UNSAFE_PATH_RE => qr{\A/|[\\\x00]|(?:\A|/)(?:[[:alpha:]]:|[.][.](?:/|\z))}smxa;
+
 sub new {
     my ( $class, %opts ) = @_;
     my $base = path( $opts{'base_directory'} // "$ENV{'HOME'}/.nt" );
+    $base = $base->realpath if $base->is_dir;
     return bless { 'base' => $base }, $class;
 }
 
@@ -29,13 +33,13 @@ sub init {
 
 sub list {
     my ( $self, $ns ) = @_;
-    my $root = $self->{'base'};
-    return () if !$root->is_dir;
-    my $scope = length $ns ? $root->child($ns) : $root;
-    return () if !$scope->is_dir;
-    my $it = $scope->iterator( { 'recurse' => 1 } );
+    my $root  = $self->{'base'};
+    my $scope = $self->_safe_path( $ns, 'namespace' );
+    return () if !$root->is_dir || !$scope->is_dir;
+    my $it = $scope->iterator( { 'recurse' => 1, 'follow_symlinks' => 0 } );
     my @keys;
     while ( defined( my $p = $it->() ) ) {
+        next if -l $p;
         push @keys, $self->_key_from_path($p) if !$p->is_dir && $p =~ m/[.]md\z/smx;
     }
     return sort @keys;
@@ -78,7 +82,24 @@ sub find {
 sub _path_for {
     my ( $self, $key ) = @_;
     croak 'empty key' if !length $key;
-    return $self->{'base'}->child("$key.md");
+    return $self->_safe_path( $key, 'key', '.md' );
+}
+
+sub _safe_path {
+    my ( $self, $name, $kind, $suffix ) = @_;
+
+    # Check the original name before normalization or adding the record suffix.
+    croak "unsafe $kind: $name" if $name =~ $UNSAFE_PATH_RE;
+
+    my $file = $self->{'base'};
+    for my $part ( split m{/}smx, $name . ( $suffix // q{} ) ) {
+        next if $part eq q{} || $part eq q{.};
+        $file = $file->child($part);
+
+        # lstat semantics also catch dangling links; the configured base is trusted.
+        croak "unsafe $kind: symbolic link in $name" if -l $file;
+    }
+    return $file;
 }
 
 sub _key_from_path {
@@ -173,8 +194,12 @@ sub main {
     my $arg = shift @ARGV;
     my $sub = $COMMANDS->{$cmd} // \&_cmd_usage;
 
-    my $store = NT::Store->new( 'base_directory' => $opts->{'base'} );
-    exit $sub->( $store, $arg, $opts );
+    my $status = eval {
+        my $store = NT::Store->new( 'base_directory' => $opts->{'base'} );
+        $sub->( $store, $arg, $opts );
+    };
+    exit _die( $EVAL_ERROR, $EXIT_ERROR ) if $EVAL_ERROR;
+    exit $status;
 }
 
 sub _cmd_usage {
@@ -353,6 +378,7 @@ sub _json_mode {
 
 sub _die {
     my ( $msg, $code ) = @_;
+    chomp $msg;
     print {*STDERR} "nt: $msg\n" or croak $OS_ERROR;
     return $code // $EXIT_ERROR;
 }
@@ -378,6 +404,12 @@ stdin is a terminal, reads stdin in pipelines, and emits JSON when
 explicitly requested. Records without frontmatter round-trip
 byte-for-byte, and frontmatter the parser does not understand is
 preserved verbatim.
+
+Keys and namespaces must be relative to the store. Parent components
+(C<..>), absolute or drive-qualified paths, backslashes, and NUL bytes
+are rejected. Symbolic links below the store root are rejected for direct
+access and skipped by C<list> and C<find>. The configured root itself may
+be a symbolic link.
 
 =head1 COMMANDS
 
@@ -524,6 +556,9 @@ None known.
 The flat C<key: value> frontmatter writer does not escape values
 containing newlines or unbalanced colons. Records that need richer
 YAML must be written via stdin so the raw block round-trips verbatim.
+
+Path checks do not protect against concurrent replacement of store entries.
+Use a store directory writable only by trusted processes.
 
 =head1 AUTHOR
 

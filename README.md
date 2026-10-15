@@ -38,6 +38,12 @@ For example, `work/projects/kafka` refers to
 
 A **namespace** is a subdirectory. Records can live at the store root or
 in nested namespaces. Writes create parent directories as needed.
+Keys and namespaces must be relative to the store: parent components (`..`),
+absolute or drive-qualified paths, backslashes, and NUL bytes are rejected.
+Symbolic links below the root are rejected for direct access and skipped by
+`list` and `find`, even if their targets are inside the store. The configured
+root itself may be a symbolic link. Invalid paths exit with code `1`.
+
 Use `-b DIR` to select a different store:
 
 ```sh
@@ -152,6 +158,19 @@ Command errors are written to stderr with an `nt:` prefix.
   does not quote or escape values; edit the file directly for richer YAML.
 - `find` reads every record. For large stores, filesystem search tools such
   as `grep` or `rg` may be more suitable.
+- Path checks do not protect against concurrent replacement of store entries.
+  Use a store directory writable only by trusted processes.
+
+## Tests
+
+With the dependencies installed:
+
+```sh
+perl -c nt.pl
+prove -v t
+```
+
+Tests use temporary stores and CLI subprocesses; they do not touch real notes.
 
 ## License
 
