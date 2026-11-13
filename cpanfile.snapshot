@@ -41,6 +41,15 @@ DISTRIBUTIONS
       perl 5.008
       strict 0
       warnings 0
+  IO-Tty-1.31
+    pathname: T/TO/TODDR/IO-Tty-1.31.tar.gz
+    provides:
+      IO::Pty 1.31
+      IO::Tty 1.31
+      IO::Tty::Constant 1.31
+    requirements:
+      ExtUtils::MakeMaker 0
+      perl 5.008008
   Module-Build-Tiny-0.051
     pathname: L/LE/LEONT/Module-Build-Tiny-0.051.tar.gz
     provides:

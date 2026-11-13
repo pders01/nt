@@ -9,6 +9,7 @@ use warnings;
 package NT::Store;
 
 use Carp       qw( croak );
+use Encode     qw( decode_utf8 );
 use English    qw( -no_match_vars );
 use Errno      qw( EEXIST );
 use Fcntl      qw( O_WRONLY O_CREAT O_EXCL );
@@ -39,7 +40,12 @@ sub list {
     my $root  = $self->{'base'};
     my $scope = $self->_safe_path( $ns, 'namespace' );
     return () if !$root->is_dir || !$scope->is_dir;
-    my $it = $scope->iterator( { 'recurse' => 1, 'follow_symlinks' => 0 } );
+
+    # readdir returns bytes. Use a byte path for iteration so Unicode parent
+    # names do not cause those bytes to be encoded a second time.
+    my $scope_name = "$scope";
+    utf8::encode($scope_name) if utf8::is_utf8($scope_name);
+    my $it = path($scope_name)->iterator( { 'recurse' => 1, 'follow_symlinks' => 0 } );
     my @keys;
     while ( defined( my $p = $it->() ) ) {
         next if -l $p;
@@ -124,7 +130,9 @@ sub _safe_path {
 
 sub _key_from_path {
     my ( $self, $file ) = @_;
-    my $rel = $file->relative( $self->{'base'} )->stringify;
+    my $base = "$self->{'base'}";
+    utf8::encode($base) if utf8::is_utf8($base);
+    my $rel = decode_utf8( $file->relative($base)->stringify );
     $rel =~ s/[.]md\z//smx;
     return $rel;
 }
@@ -183,15 +191,16 @@ Readonly my $EXIT_NOT_FOUND => 3;
 Readonly my $EXIT_EXISTS    => 4;
 
 Readonly my $COMMANDS => {
-    'usage'  => \&_cmd_usage,
-    'init'   => \&_cmd_init,
-    'list'   => \&_cmd_list,
-    'view'   => \&_cmd_view,
-    'add'    => \&_cmd_add,
-    'put'    => \&_cmd_put,
-    'edit'   => \&_cmd_edit,
-    'delete' => \&_cmd_delete,
-    'find'   => \&_cmd_find,
+    'usage'      => \&_cmd_usage,
+    'init'       => \&_cmd_init,
+    'list'       => \&_cmd_list,
+    'view'       => \&_cmd_view,
+    'add'        => \&_cmd_add,
+    'put'        => \&_cmd_put,
+    'edit'       => \&_cmd_edit,
+    'delete'     => \&_cmd_delete,
+    'find'       => \&_cmd_find,
+    'completion' => \&_cmd_completion,
 };
 
 sub main {
@@ -247,6 +256,7 @@ Commands:
   edit <key>        Open existing record in $EDITOR
   delete <key>      Remove a record
   find <pattern>    Print keys matching regex (body or frontmatter)
+  completion <shell> Print completion script (bash or zsh)
 
 Common options:
   -b DIR            Base directory (default: $HOME/.nt)
@@ -258,6 +268,271 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 not-found, 4 exists.
 
 Run `nt usage -v` for examples and full option detail.
 END_USAGE
+    return $EXIT_OK;
+}
+
+sub _cmd_completion {
+    my ( undef, $shell ) = @_;
+    return _die( 'expected shell: bash or zsh', $EXIT_USAGE )
+        if !defined $shell || ( $shell ne 'bash' && $shell ne 'zsh' );
+
+    # Shared shell-word decoding deliberately does not use eval: completing an
+    # argument must never execute substitutions supplied on the command line.
+    print <<'SHELL' or croak $OS_ERROR;
+_nt_decode() {
+    local nt_raw=$1 nt_char nt_next nt_name nt_text nt_decode_quote=
+    REPLY=
+    case "$nt_raw" in
+        '~'|'~/'*) REPLY=$HOME; nt_raw=${nt_raw#\~} ;;
+    esac
+    while [[ -n "$nt_raw" ]]; do
+        nt_char=${nt_raw%"${nt_raw#?}"}
+        nt_raw=${nt_raw#?}
+        if [[ "$nt_decode_quote" == "'" ]]; then
+            if [[ "$nt_char" == "'" ]]; then nt_decode_quote=; else REPLY=$REPLY$nt_char; fi
+        elif [[ "$nt_char" == '\' ]]; then
+            nt_next=${nt_raw%"${nt_raw#?}"}
+            if [[ -z "$nt_decode_quote" || "$nt_next" == '$' || "$nt_next" == '`' || "$nt_next" == '"' || "$nt_next" == '\' ]]; then
+                REPLY=$REPLY$nt_next
+                nt_raw=${nt_raw#?}
+            else
+                REPLY=$REPLY$nt_char
+            fi
+        elif [[ "$nt_char" == '"' ]]; then
+            if [[ "$nt_decode_quote" == '"' ]]; then nt_decode_quote=; else nt_decode_quote='"'; fi
+        elif [[ "$nt_char" == "'" && -z "$nt_decode_quote" ]]; then
+            nt_decode_quote="'"
+        elif [[ "$nt_char" == '$' ]]; then
+            nt_name=
+            if [[ "$nt_raw" == '{'* && "$nt_raw" == *'}'* ]]; then
+                nt_text=${nt_raw#\{}
+                nt_name=${nt_text%%\}*}
+            else
+                nt_name=${nt_raw%%[!a-zA-Z0-9_]*}
+            fi
+            case "$nt_name" in
+                ''|[!a-zA-Z_]*|*[!a-zA-Z0-9_]*) REPLY=$REPLY$nt_char ;;
+                *)
+                    if [[ "$nt_raw" == '{'* ]]; then nt_raw=${nt_raw#*\}}; else nt_raw=${nt_raw#"$nt_name"}; fi
+                    _nt_value "$nt_name"
+                    REPLY=$REPLY$nt_value
+                    ;;
+            esac
+        else
+            REPLY=$REPLY$nt_char
+        fi
+    done
+    nt_quote=$nt_decode_quote
+}
+
+_nt_context() {
+    local nt_target=$1 nt_index=0 nt_word nt_scan_command= nt_scan_position=0 nt_scan_expect= nt_scan_end_options= nt_cluster nt_char
+    shift
+    nt_command= nt_position=0 nt_expect= nt_end_options= nt_base=()
+    for nt_word in "$@"; do
+        if (( nt_index == nt_target )); then
+            nt_command=$nt_scan_command nt_position=$nt_scan_position nt_expect=$nt_scan_expect nt_end_options=$nt_scan_end_options
+        fi
+        _nt_decode "$nt_word"
+        nt_word=$REPLY
+        (( nt_index += 1 ))
+        if [[ -n "$nt_scan_expect" ]]; then
+            [[ "$nt_scan_expect" == base ]] && nt_base=(-b "$nt_word")
+            nt_scan_expect=
+            continue
+        fi
+        if [[ -z "$nt_scan_end_options" ]]; then
+            case "$nt_word" in
+                --) nt_scan_end_options=1; continue ;;
+                --base_directory) nt_scan_expect=base; continue ;;
+                --set) nt_scan_expect=set; continue ;;
+                --base_directory=*) nt_base=(-b "${nt_word#*=}"); continue ;;
+                --*) continue ;;
+                -?*)
+                    nt_cluster=${nt_word#-}
+                    while [[ -n "$nt_cluster" ]]; do
+                        nt_char=${nt_cluster%"${nt_cluster#?}"}
+                        nt_cluster=${nt_cluster#?}
+                        case "$nt_char" in
+                            b|m)
+                                if [[ "$nt_char" == b ]]; then nt_scan_expect=base; else nt_scan_expect=set; fi
+                                if [[ -n "$nt_cluster" ]]; then
+                                    [[ "$nt_scan_expect" == base ]] && nt_base=(-b "$nt_cluster")
+                                    nt_scan_expect=
+                                fi
+                                break
+                                ;;
+                            v) ;;
+                            *) break ;;
+                        esac
+                    done
+                    continue
+                    ;;
+            esac
+        fi
+        if [[ -z "$nt_scan_command" ]]; then nt_scan_command=$nt_word; else (( nt_scan_position += 1 )); fi
+    done
+}
+
+_nt_current_option() {
+    local nt_cluster nt_char nt_prefix=-
+    nt_directory_prefix=
+    [[ -n "$nt_expect" || -n "$nt_end_options" ]] && return 0
+    case "$nt_current" in
+        --base_directory=*) nt_expect=base; nt_directory_prefix=--base_directory= ;;
+        --set=*) nt_expect=set ;;
+        -[!-]*)
+            nt_cluster=${nt_current#-}
+            while [[ -n "$nt_cluster" ]]; do
+                nt_char=${nt_cluster%"${nt_cluster#?}"}
+                nt_cluster=${nt_cluster#?}
+                nt_prefix=$nt_prefix$nt_char
+                case "$nt_char" in
+                    b) nt_expect=base; nt_directory_prefix=$nt_prefix; break ;;
+                    m) nt_expect=set; break ;;
+                    v) ;;
+                    *) break ;;
+                esac
+            done
+            ;;
+    esac
+}
+
+_nt_candidates() {
+    local nt_key
+    if [[ -z "$nt_end_options" && "$nt_current" == -* ]]; then
+        printf '%s\n' -b --base_directory --json --no-json --meta --body \
+            -m --set -v --verbose
+    elif [[ -z "$nt_command" ]]; then
+        printf '%s\n' init list view add put edit delete find usage completion
+    elif (( nt_position == 0 )); then
+        case "$nt_command" in
+            view|edit|delete|put)
+                "$nt_executable" "${nt_base[@]}" --no-json list 2>/dev/null
+                ;;
+            list|add)
+                while IFS= read -r nt_key; do
+                    while [[ "$nt_key" == */* ]]; do
+                        nt_key=${nt_key%/*}
+                        printf '%s/\n' "$nt_key"
+                    done
+                done < <("$nt_executable" "${nt_base[@]}" --no-json list 2>/dev/null) | sort -u
+                ;;
+            completion) printf '%s\n' bash zsh ;;
+        esac
+    fi
+    return 0
+}
+SHELL
+
+    if ( $shell eq 'bash' ) {
+        print <<'BASH' or croak $OS_ERROR;
+_nt_value() { nt_value=${!1}; }
+
+_nt_reply() {
+    local nt_candidate=${1#"$nt_word_prefix"} nt_suffix=$2
+    # Readline handles quotes only when a quote is already open. Otherwise
+    # escape explicitly; -o filenames would inspect unrelated files in $PWD.
+    case "$nt_quote" in
+        "'") nt_candidate=${nt_candidate//\'/\'\\\'\'}; nt_suffix= ;;
+        '"')
+            nt_candidate=${nt_candidate//\\/\\\\}
+            nt_candidate=${nt_candidate//\$/\\\$}
+            nt_candidate=${nt_candidate//\`/\\\`}
+            nt_candidate=${nt_candidate//\"/\\\"}
+            nt_suffix=
+            ;;
+        *) printf -v nt_candidate '%q' "$nt_candidate" ;;
+    esac
+    COMPREPLY+=("$nt_candidate$nt_suffix")
+}
+
+_nt() {
+    local nt_command nt_position nt_expect nt_end_options nt_current nt_quote nt_value REPLY
+    local nt_executable=${COMP_WORDS[0]} nt_directory_prefix nt_word_prefix=
+    local -a nt_base nt_words
+    local nt_candidate nt_word nt_i nt_last nt_join= nt_target=-1 nt_raw_current= nt_suffix=' '
+    COMPREPLY=()
+    # Reassemble Bash's '=' and ':' word breaks across the entire command,
+    # including options to the right of the cursor. Never change global state.
+    for ((nt_i=1; nt_i<${#COMP_WORDS[@]}; nt_i++)); do
+        nt_word=${COMP_WORDS[nt_i]}
+        nt_last=$((${#nt_words[@]} - 1))
+        if (( nt_last >= 0 )) && [[ "$nt_word" == = || "$nt_word" == : || -n "$nt_join" ]]; then
+            if (( nt_i == COMP_CWORD )); then nt_word_prefix=${nt_words[nt_last]}; fi
+            nt_words[nt_last]+=$nt_word
+        else
+            nt_words+=("$nt_word")
+            nt_last=$((${#nt_words[@]} - 1))
+        fi
+        if (( nt_i == COMP_CWORD )); then nt_target=$nt_last; nt_raw_current=${nt_words[nt_last]}; fi
+        nt_join=
+        [[ "$nt_word" == = || "$nt_word" == : ]] && nt_join=1
+    done
+    _nt_context "$nt_target" "${nt_words[@]}"
+    # Bash 3 keeps word-break characters inside COMP_WORDS, while newer Bash
+    # may split them. The callback's second argument identifies the actual
+    # replacement span in either case (including an opening quote).
+    if (( $# >= 2 )) && [[ "$nt_raw_current" == *"$2" ]]; then
+        nt_word_prefix=${nt_raw_current%"$2"}
+    fi
+    _nt_decode "$nt_word_prefix"
+    nt_word_prefix=$REPLY
+    _nt_decode "$nt_raw_current"
+    nt_current=$REPLY
+    _nt_current_option
+    case "$nt_expect" in
+        base)
+            while IFS= read -r nt_candidate; do
+                _nt_reply "$nt_directory_prefix$nt_candidate/" ''
+            done < <(compgen -d -- "${nt_current#"$nt_directory_prefix"}")
+            return 0
+            ;;
+        set) return 0 ;;
+    esac
+    if [[ "$nt_command" == list || "$nt_command" == add ]] && [[ "$nt_current" != -* ]]; then nt_suffix=; fi
+    while IFS= read -r nt_candidate; do
+        [[ "$nt_candidate" == "$nt_current"* ]] && _nt_reply "$nt_candidate" "$nt_suffix"
+    done < <(_nt_candidates)
+    return 0
+}
+complete -o nospace -F _nt nt
+BASH
+    }
+    else {
+        print <<'ZSH' or croak $OS_ERROR;
+_nt_value() { nt_value=${(P)1}; }
+
+_nt() {
+    emulate -L zsh
+    setopt extendedglob
+    local nt_command nt_position nt_expect nt_end_options nt_current nt_quote nt_value REPLY
+    local nt_executable=${words[1]} nt_directory_prefix
+    local -a nt_base nt_candidates
+    _nt_context $((CURRENT-2)) "${(@)words[2,-1]}"
+    _nt_decode "${words[CURRENT]}"
+    nt_current=$REPLY
+    _nt_current_option
+    case "$nt_expect" in
+        base)
+            [[ -n "$nt_directory_prefix" ]] && compset -P "${(b)nt_directory_prefix}"
+            _files -/
+            return
+            ;;
+        set) return 0 ;;
+    esac
+    nt_candidates=("${(@f)$(_nt_candidates)}")
+    if (( ${#nt_candidates} )); then
+        if [[ "$nt_command" == list || "$nt_command" == add ]] && [[ "$nt_current" != -* ]]; then
+            compadd -S '' -- "${nt_candidates[@]}"
+        else
+            compadd -- "${nt_candidates[@]}"
+        fi
+    fi
+}
+compdef _nt nt
+ZSH
+    }
     return $EXIT_OK;
 }
 
@@ -469,6 +744,14 @@ Remove a record.
 =item B<find> I<pattern>
 
 Print keys whose body or frontmatter matches the regex.
+
+=item B<completion> I<bash|zsh>
+
+Print a shell completion script. Source it in Bash with
+C<eval "$(nt completion bash)">, or in zsh after C<compinit> with
+C<eval "$(nt completion zsh)">. Entries are queried dynamically and
+C<-b> / C<--base_directory> select the store used for completion.
+No external completion framework is required.
 
 =item B<usage>
 

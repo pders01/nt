@@ -21,6 +21,38 @@ chmod +x ~/bin/nt
 Make sure `~/bin` is on your `PATH`. Set `$EDITOR` to select an editor;
 `nt` defaults to `vi`.
 
+## Shell completion
+
+Generate completion scripts directly from `nt`; no extra Perl modules or
+external completion framework (including `bash-completion`) are needed.
+
+For Bash, add to `~/.bashrc`:
+
+```bash
+eval "$(nt completion bash)"
+```
+
+For zsh, add after your existing `compinit` setup in `~/.zshrc`:
+
+```zsh
+# If completion is not already initialized:
+# autoload -Uz compinit && compinit
+eval "$(nt completion zsh)"
+```
+
+Completions include commands, options, existing keys for `view`, `edit`,
+`delete`, and `put`, and namespaces for `list` and `add`. Namespaces are
+derived from existing keys, so empty directories are not suggested.
+Keys are queried when you press Tab, so no regeneration is needed after
+adding or deleting records. `-b DIR` and `--base_directory DIR` (including
+attached forms) select the store used for completion, even when the option
+is to the right of the cursor. Quoted/escaped paths, `$VAR` / `${VAR}` values,
+and bundled short options such as `-vbDIR` are supported. Completion never
+evaluates command substitutions.
+
+Alternatively, save the output to a file and source it from your shell
+configuration instead of generating it at shell startup.
+
 ## Quickstart
 
 ```sh
@@ -63,6 +95,7 @@ nt -b ./notes list
 | `nt delete <key>` | Remove a record |
 | `nt find <pattern>` | List keys whose body or frontmatter matches a Perl regular expression |
 | `nt usage` | Show a short overview; use `-v` for detailed help |
+| `nt completion <bash\|zsh>` | Print a shell completion script |
 
 For `add` and `put`, piped stdin supplies the body. With interactive stdin,
 `nt` opens an editor for the body unless `--set` is supplied. `edit` opens
@@ -167,14 +200,19 @@ Command errors are written to stderr with an `nt:` prefix.
 
 ## Tests
 
-With the dependencies installed:
+Install the development dependencies from `cpanfile` with Carton, then run:
 
 ```sh
+carton install
 perl -c nt.pl
 prove -v t
 ```
 
 Tests use temporary stores and CLI subprocesses; they do not touch real notes.
+The test-only dependency `IO::Pty` drives real Bash and zsh sessions to check
+quoting and insertion, while the candidate tests check exact completion sets
+and script generation. Shell-specific checks are skipped if that shell is not
+installed. No Python is needed, and `IO::Pty` is not required to run `nt`.
 
 ## License
 
